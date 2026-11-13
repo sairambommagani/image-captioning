@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+data/
+artifacts/
+artifacts_*/
+drive_tmp/
+.pytest_cache/
+*.zip
+*.mp4
+kaggle.json
+.ipynb_checkpoints/

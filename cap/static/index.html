@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Image Captioning</title>
+<style>
+  :root { --bg:#f6f6f4; --panel:#fff; --ink:#1d1d1f; --muted:#6b6b70; --line:#dcdcd8; --accent:#2f4a6d; --warnbg:#fbf3e4; --warn:#7a5a1d; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 -apple-system,"Segoe UI",Roboto,Arial,sans-serif; }
+  header { padding:16px 28px; background:var(--panel); border-bottom:1px solid var(--line); }
+  header h1 { margin:0; font-size:20px; font-weight:600; }
+  header p { margin:2px 0 0; color:var(--muted); font-size:13px; }
+  main { display:grid; grid-template-columns:340px 1fr; gap:20px; padding:20px 28px; max-width:1250px; margin:0 auto; }
+  @media (max-width:900px) { main { grid-template-columns:1fr; padding:16px; } }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:18px; min-width:0; }
+  h2 { font-size:13px; margin:0 0 12px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); font-weight:600; }
+  label { display:block; font-size:13px; margin:12px 0 4px; }
+  select { font:inherit; padding:6px; border:1px solid var(--line); border-radius:6px; width:100%; }
+  input[type=file] { max-width:100%; }
+  .btn { border:1px solid var(--accent); background:var(--accent); color:#fff; padding:8px 14px; border-radius:6px; cursor:pointer; font:inherit; margin-top:14px; }
+  .btn:disabled { opacity:.5; cursor:default; }
+  .note { font-size:12px; color:var(--muted); }
+  .msg { border:1px solid var(--line); background:var(--warnbg); color:var(--warn); border-radius:8px; padding:10px 12px; margin-top:10px; font-size:13px; }
+  .thumbs { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; }
+  .thumbs img { width:100%; aspect-ratio:1; object-fit:cover; border-radius:4px; border:2px solid transparent; cursor:pointer; }
+  .thumbs img.on { border-color:var(--accent); }
+  .res { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.2fr); gap:18px; align-items:start; }
+  @media (max-width:700px) { .res { grid-template-columns:1fr; } }
+  .res img { width:100%; border-radius:6px; border:1px solid var(--line); }
+  .cap { font-size:18px; line-height:1.4; margin:4px 0 12px; font-family:Georgia,serif; }
+  .lab { font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+  ul.refs { margin:4px 0 0; padding-left:18px; color:var(--muted); font-size:13px; }
+  .scroll { overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  td.n, th.n { text-align:right; }
+  .full { grid-column:1 / -1; }
+  .spin { display:inline-block; width:12px; height:12px; border:2px solid var(--line); border-top-color:var(--accent); border-radius:50%; animation:s .8s linear infinite; vertical-align:middle; }
+  @keyframes s { to { transform:rotate(360deg); } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Image captioning with a vision-language model (BLIP)</h1>
+  <p>Flickr8k: zero-shot vs fine-tuned. Research prototype.</p>
+</header>
+<main>
+  <section class="panel">
+    <h2>Input</h2>
+    <label for="model">Model</label>
+    <select id="model">
+      <option value="both">Fine-tuned vs zero-shot (compare)</option>
+      <option value="finetuned">Fine-tuned on Flickr8k</option>
+      <option value="zero_shot">Zero-shot BLIP</option>
+    </select>
+    <label for="file">Photo (JPEG / PNG)</label>
+    <input type="file" id="file" accept=".jpg,.jpeg,.png,image/*">
+    <label>Or a held-out test photo</label>
+    <div class="thumbs" id="thumbs"><span class="note">none available</span></div>
+    <div><button class="btn" id="go" disabled>Generate caption</button></div>
+    <p class="note" id="ver"></p>
+  </section>
+  <section class="panel">
+    <h2>Result</h2>
+    <div id="out" class="note">Choose a photo. The first zero-shot caption downloads the zero-shot model once (about 1 GB).</div>
+  </section>
+  <section class="panel full">
+    <h2>Results on 1,000 held-out test photos</h2>
+    <div class="scroll" id="perf"><span class="spin"></span></div>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let chosen = null, url = null;
+const NAMES = { finetuned: 'Fine-tuned BLIP', zero_shot: 'Zero-shot BLIP' };
+$('file').onchange = () => {
+  const f = $('file').files[0];
+  chosen = f ? { blob: f, name: f.name, refs: null } : null;
+  url = f ? URL.createObjectURL(f) : null;
+  document.querySelectorAll('.thumbs img').forEach(x => x.classList.remove('on'));
+  $('go').disabled = !chosen;
+};
+$('go').onclick = async () => {
+  if (!chosen) return;
+  const fd = new FormData(); fd.append('file', chosen.blob, chosen.name);
+  $('go').disabled = true; $('out').innerHTML = '<span class="spin"></span> generating...';
+  try {
+    const r = await fetch('/caption?model=' + $('model').value, { method:'POST', body: fd });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.detail || r.statusText);
+    let h = `<div class="res"><img src="${url}" alt="input photo"><div>`;
+    for (const [k, v] of Object.entries(j.results))
+      h += `<div class="lab">${NAMES[k] || esc(k)}</div><div class="cap">${esc(v.caption)}</div><div class="note" style="margin:-8px 0 12px">beam size ${v.beams}, ${v.seconds} s on CPU</div>`;
+    if (chosen.refs) h += `<div class="lab">Human captions (references)</div><ul class="refs">${chosen.refs.map(x => `<li>${esc(x)}</li>`).join('')}</ul>`;
+    h += `</div></div><p class="note">${esc(j.reliability)}. Model ${esc(j.model_version)}. ${esc(j.disclaimer)}</p>`;
+    $('out').innerHTML = h;
+  } catch (e) { $('out').innerHTML = `<div class="msg">${esc(e.message)}</div>`; }
+  finally { $('go').disabled = !chosen; }
+};
+(async () => {
+  try {
+    const s = await (await fetch('/samples')).json();
+    if (s.length) {
+      $('thumbs').innerHTML = '';
+      s.forEach(x => {
+        const im = document.createElement('img');
+        im.src = '/samples/' + encodeURIComponent(x.file); im.alt = 'test photo'; im.title = x.references[0];
+        im.onclick = async () => {
+          document.querySelectorAll('.thumbs img').forEach(y => y.classList.remove('on')); im.classList.add('on');
+          const b = await (await fetch(im.src)).blob();
+          chosen = { blob: b, name: x.file, refs: x.references }; url = im.src;
+          $('file').value = ''; $('go').disabled = false;
+        };
+        $('thumbs').appendChild(im);
+      });
+    }
+  } catch (e) {}
+  try {
+    const r = await fetch('/model-info'); const j = await r.json();
+    if (!r.ok) throw new Error(j.detail || r.statusText);
+    $('ver').textContent = 'Model ' + j.version.name;
+    const res = j.metrics.results, f = x => x === null || x === undefined ? '-' : x.toFixed(3);
+    const label = { blip_zero_shot: 'BLIP zero-shot', git_zero_shot: 'GIT zero-shot', blip_finetuned: 'BLIP fine-tuned (deployed)', human_reference: 'Human (1 vs other 4)' };
+    let h = '<table><tr><th>Model</th><th class="n">BLEU-4</th><th class="n">METEOR</th><th class="n">ROUGE-L</th><th class="n">CIDEr</th><th class="n">CLIPScore</th><th class="n">Hallucinated object</th><th class="n">Distinct captions</th></tr>';
+    for (const [k, v] of Object.entries(res)) {
+      const t = v.test;
+      h += `<tr><td>${k === j.metrics.deployed ? '<b>' + (label[k] || esc(k)) + '</b>' : (label[k] || esc(k))}</td><td class="n">${f(t['BLEU-4'])}</td><td class="n">${f(t.METEOR)}</td><td class="n">${f(t['ROUGE-L'])}</td><td class="n">${f(t.CIDEr)}</td><td class="n">${f(t.CLIPScore)}</td>` +
+        `<td class="n">${v.hallucination ? v.hallucination.captions_with_hallucinated_object_pct + '%' : '-'}</td><td class="n">${v.diversity ? v.diversity.distinct_captions_pct + '%' : '-'}</td></tr>`;
+    }
+    h += '</table><p class="note">Scores against the 5 human captions of each photo. CIDEr is the main captioning metric. CLIPScore checks the caption against the image itself. Hallucinated object = caption names a common object that no human caption mentions.</p>';
+    $('perf').innerHTML = h;
+  } catch (e) { $('perf').innerHTML = `<div class="msg">${esc(e.message)}</div>`; }
+})();
+</script>
+</body>
+</html>
